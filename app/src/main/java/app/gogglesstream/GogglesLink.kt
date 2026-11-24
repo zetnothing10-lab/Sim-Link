@@ -17,18 +17,32 @@ import java.nio.ByteOrder
  *     If nothing was sent for >= 1 s, send a 4-byte zero length as a keepalive.
  */
 class GogglesLink(private val cfg: StreamConfig) {
-    private var socket: Socket? = null
+    private var closer: (() -> Unit)? = null
     private var out: OutputStream? = null
     private var inp: InputStream? = null
 
     fun connect() {
-        val s = Socket()
-        s.tcpNoDelay = true
-        s.connect(InetSocketAddress(cfg.host, cfg.port), 5_000)
-        s.soTimeout = 15_000
-        socket = s
-        out = s.getOutputStream()
-        inp = s.getInputStream()
+        val usb = UsbBridgeService.stack
+        val setTimeout: (Int) -> Unit
+        if (usb != null && cfg.host == UsbBridgeService.GOGGLES_IP) {
+            // Goggles over the USB link: userspace TCP, no VPN.
+            val s = usb.connect(cfg.port, 5_000)
+            s.soTimeout = 15_000
+            closer = { s.close() }
+            out = s.output
+            inp = s.input
+            setTimeout = { s.soTimeout = it }
+        } else {
+            // Any other address (e.g. a PC on Wi-Fi for testing): normal socket.
+            val s = Socket()
+            s.tcpNoDelay = true
+            s.connect(InetSocketAddress(cfg.host, cfg.port), 5_000)
+            s.soTimeout = 15_000
+            closer = { s.close() }
+            out = s.getOutputStream()
+            inp = s.getInputStream()
+            setTimeout = { s.soTimeout = it }
+        }
 
         val hello = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
         hello.put('V'.code.toByte()).put('M'.code.toByte()).put('S'.code.toByte()).put('2'.code.toByte())
@@ -39,7 +53,7 @@ class GogglesLink(private val cfg: StreamConfig) {
         val r = inp!!.read()
         if (r < 0) throw java.io.IOException("receiver closed during hello")
         if (r != 'R'.code) throw java.io.IOException("unexpected ready reply 0x%02x".format(r))
-        s.soTimeout = 0
+        setTimeout(0)
     }
 
     fun sendFrame(data: ByteArray) {
@@ -53,6 +67,6 @@ class GogglesLink(private val cfg: StreamConfig) {
     }
 
     fun close() {
-        try { socket?.close() } catch (_: Exception) {}
+        try { closer?.invoke() } catch (_: Exception) {}
     }
 }

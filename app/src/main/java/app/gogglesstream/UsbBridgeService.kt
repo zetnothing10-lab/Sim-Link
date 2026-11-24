@@ -1,6 +1,10 @@
 package app.gogglesstream
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -8,22 +12,20 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
-import android.net.VpnService
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelFileDescriptor
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import android.os.IBinder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Makes 192.168.60.2 (the goggles) reachable from normal sockets:
- *   app socket -> TUN (VpnService, 192.168.60.0/24 only) -> Ethernet+ARP -> userspace RNDIS -> USB bulk.
- * Only that /24 is routed into the tunnel, so the rest of the phone's traffic is untouched.
+ * Makes the goggles (192.168.60.2) reachable WITHOUT a VPN:
+ *   GogglesLink -> UserTcpStack (userspace TCP) -> IPv4/Ethernet+ARP -> userspace RNDIS -> USB bulk.
+ * No VpnService / TUN, so no VPN permission dialog is needed (the DJI RC 2 firmware has none).
  */
-class UsbBridgeService : VpnService() {
+class UsbBridgeService : Service() {
 
     companion object {
         const val ACTION_START = "app.gogglesstream.USB_START"
@@ -32,6 +34,12 @@ class UsbBridgeService : VpnService() {
         private const val DJI_VID = 0x2CA3
         private const val GOGGLES_PID = 0x0020
 
+        const val GOGGLES_IP = "192.168.60.2"
+        private const val CHANNEL = "usb"
+        private const val NOTIF_ID = 2
+
+        /** Non-null while the USB link is up; GogglesLink opens its TCP connection through it. */
+        @Volatile var stack: UserTcpStack? = null
         @Volatile var running = false
         @Volatile var lastStatus = "Goggles not connected"
         var listener: ((String, Boolean) -> Unit)? = null
@@ -50,15 +58,34 @@ class UsbBridgeService : VpnService() {
     @Volatile private var gogglesMac: ByteArray? = null
     @Volatile private var alive = false
     private var conn: UsbDeviceConnection? = null
-    private var tun: ParcelFileDescriptor? = null
     private var link: RndisLink? = null
-    private var tunOut: FileOutputStream? = null
     private var detachReceiver: BroadcastReceiver? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun goForeground() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "USB link", NotificationManager.IMPORTANCE_LOW))
+        val open = PendingIntent.getActivity(
+            this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = Notification.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle("USB link to the goggles")
+            .setContentText("Keeping the goggles connection alive")
+            .setContentIntent(open)
+            .setOngoing(true)
+            .build()
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else startForeground(NOTIF_ID, n)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> shutdown("Goggles disconnected")
             ACTION_START -> if (!running) {
+                try { goForeground() } catch (_: Exception) { /* still works as a plain service while the app is open */ }
                 running = true
                 publish("Looking for the goggles…", true)
                 Thread({ setup() }, "usb-setup").start()
@@ -67,7 +94,6 @@ class UsbBridgeService : VpnService() {
         return START_NOT_STICKY
     }
 
-    override fun onRevoke() { shutdown("VPN permission revoked") }
     override fun onDestroy() { shutdown("Goggles disconnected"); super.onDestroy() }
 
     // ------------------------------------------------------------------ setup
@@ -93,21 +119,11 @@ class UsbBridgeService : VpnService() {
             link = l
             val info = l.init()
 
-            val builder = Builder()
-                .setSession("Goggles USB")
-                .addAddress("192.168.60.1", 24)
-                .addRoute("192.168.60.0", 24)
-                .setMtu(1400)
-                .setBlocking(true)
-            if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
-            val t = builder.establish() ?: return fail("VPN permission missing")
-            tun = t
-            tunOut = FileOutputStream(t.fileDescriptor)
+            stack = UserTcpStack(hostIp, gogglesIp) { ip -> sendIpPacket(ip) }
             alive = true
 
             watchDetach(dev)
             Thread({ rxLoop() }, "usb-rx").start()
-            Thread({ txLoop(t) }, "usb-tx").start()
             Thread({ arpLoop() }, "usb-arp").start()
             publish("Goggles linked ($info). Waiting for it to answer on 192.168.60.2…", true)
 
@@ -178,24 +194,15 @@ class UsbBridgeService : VpnService() {
         }
     }
 
-    private fun txLoop(t: ParcelFileDescriptor) {
-        val inp = FileInputStream(t.fileDescriptor)
-        val buf = ByteArray(4096)
-        try {
-            while (alive) {
-                val n = inp.read(buf)
-                if (n <= 0) continue
-                if ((buf[0].toInt() shr 4) != 4) continue // IPv4 only
-                val eth = ByteArray(14 + n)
-                System.arraycopy(gogglesMac ?: broadcast, 0, eth, 0, 6)
-                System.arraycopy(ourMac, 0, eth, 6, 6)
-                eth[12] = 0x08; eth[13] = 0x00
-                System.arraycopy(buf, 0, eth, 14, n)
-                link!!.sendFrame(eth)
-            }
-        } catch (e: Exception) {
-            if (alive) shutdown("USB link lost: ${e.message}")
-        }
+    /** Wraps an IPv4 packet from the TCP stack in an Ethernet frame and sends it over RNDIS. */
+    private fun sendIpPacket(ip: ByteArray) {
+        val l = link ?: return
+        val eth = ByteArray(14 + ip.size)
+        System.arraycopy(gogglesMac ?: broadcast, 0, eth, 0, 6)
+        System.arraycopy(ourMac, 0, eth, 6, 6)
+        eth[12] = 0x08; eth[13] = 0x00
+        System.arraycopy(ip, 0, eth, 14, ip.size)
+        l.sendFrame(eth)
     }
 
     private fun arpLoop() {
@@ -241,9 +248,7 @@ class UsbBridgeService : VpnService() {
             0x0800 -> {
                 if (eth.size < 34) return
                 if ((0 until 4).all { eth[26 + it] == gogglesIp[it] }) learn(eth.copyOfRange(6, 12))
-                val ipLen = ((eth[16].toInt() and 0xff) shl 8) or (eth[17].toInt() and 0xff)
-                val n = minOf(ipLen, eth.size - 14)
-                if (n > 0) tunOut?.write(eth, 14, n)
+                stack?.onIpPacket(eth, 14, eth.size - 14)
             }
         }
     }
@@ -268,12 +273,13 @@ class UsbBridgeService : VpnService() {
         running = false
         try { detachReceiver?.let { unregisterReceiver(it) } } catch (_: Exception) {}
         detachReceiver = null
-        try { tun?.close() } catch (_: Exception) {}
-        tun = null
+        try { stack?.shutdown() } catch (_: Exception) {}
+        stack = null
         try { conn?.close() } catch (_: Exception) {}
         conn = null
         gogglesMac = null
         if (wasRunning) publish(reason, false)
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) {}
         stopSelf()
     }
 }

@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
-import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
@@ -102,13 +101,8 @@ class MainActivity : Activity() {
             startService(Intent(this, UsbBridgeService::class.java).setAction(UsbBridgeService.ACTION_STOP))
             return
         }
-        // The USB bridge is a VPN-service (it routes only 192.168.60.0/24 into the goggles).
-        val consent = VpnService.prepare(this)
-        if (consent != null) startActivityForResult(consent, 200) else startUsbBridge()
-    }
-
-    private fun startUsbBridge() {
-        startService(Intent(this, UsbBridgeService::class.java).setAction(UsbBridgeService.ACTION_START))
+        // No VPN involved: the bridge runs its own userspace TCP/IP over the USB (RNDIS) link.
+        startForegroundService(Intent(this, UsbBridgeService::class.java).setAction(UsbBridgeService.ACTION_START))
     }
 
     // ---------------------------------------------------------------- Streaming
@@ -139,11 +133,6 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 200) {
-            if (resultCode == RESULT_OK) startUsbBridge()
-            else Toast.makeText(this, "VPN permission is needed to reach the goggles", Toast.LENGTH_LONG).show()
-            return
-        }
         if (requestCode != 100) return
         if (resultCode != RESULT_OK || data == null) {
             Toast.makeText(this, "Screen capture was not allowed", Toast.LENGTH_SHORT).show()
