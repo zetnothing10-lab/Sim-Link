@@ -6,10 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
-import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -17,60 +17,71 @@ import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
+    private lateinit var root: LinearLayout
     private lateinit var host: EditText
     private lateinit var port: EditText
     private lateinit var fps: EditText
     private lateinit var mbps: EditText
+    private lateinit var usbButton: Button
+    private lateinit var usbStatus: TextView
     private lateinit var button: Button
     private lateinit var statusView: TextView
     private val prefs by lazy { getSharedPreferences("cfg", Context.MODE_PRIVATE) }
 
-    private fun field(label: String, value: String, numeric: Boolean): EditText {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        box.addView(TextView(this).apply { text = label; textSize = 13f })
+    private fun label(text: String, size: Float = 13f) =
+        TextView(this).apply { this.text = text; textSize = size; setPadding(0, 16, 0, 0) }
+
+    private fun field(name: String, value: String, numeric: Boolean): EditText {
+        root.addView(label(name))
         val e = EditText(this).apply {
             setText(value); setSingleLine()
             if (numeric) inputType = InputType.TYPE_CLASS_NUMBER
         }
-        box.addView(e)
-        (findViewById<LinearLayout>(1))?.addView(box)
+        root.addView(e)
         return e
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply {
-            id = 1; orientation = LinearLayout.VERTICAL
-            setPadding(48, 96, 48, 48)
-        }
-        setContentView(root)
-        root.addView(TextView(this).apply { text = "Goggles Screen Stream"; textSize = 24f })
-        root.addView(TextView(this).apply {
-            text = "Streams your entire Android screen as 1920x1080 H.264 to a goggles receiver."
-            textSize = 13f
-        })
+        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 48) }
+        setContentView(android.widget.ScrollView(this).apply { addView(root) })
+
+        root.addView(label("Goggles Screen Stream", 24f))
+        root.addView(label("Streams your entire Android screen as 1920x1080 H.264 to DJI Goggles 3 (PC Sim)."))
+
+        root.addView(label("Step 1 – USB link to the goggles", 16f))
+        root.addView(label("Plug the goggles into the phone's USB-C port, then:"))
+        usbButton = Button(this).apply { setOnClickListener { onUsbButton() } }
+        root.addView(usbButton)
+        usbStatus = label("", 13f)
+        root.addView(usbStatus)
+
+        root.addView(label("Step 2 – Stream", 16f))
         host = field("Receiver address", prefs.getString("host", "192.168.60.2")!!, false)
-        port = field("TCP port", prefs.getString("port", "")!!, true)
+        port = field("TCP port", prefs.getString("port", "9153")!!, true)
         fps = field("FPS (30–120)", prefs.getString("fps", "60")!!, true)
         mbps = field("Bitrate (Mb/s)", prefs.getString("mbps", "20")!!, true)
-
         button = Button(this).apply { setOnClickListener { onButton() } }
         root.addView(button)
-        statusView = TextView(this).apply { textSize = 14f; gravity = Gravity.START; setPadding(0, 32, 0, 0) }
+        statusView = label("", 14f)
         root.addView(statusView)
 
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         render(ScreenStreamService.lastStatus, ScreenStreamService.running)
+        renderUsb(UsbBridgeService.lastStatus, UsbBridgeService.running)
     }
 
     override fun onStart() {
         super.onStart()
         ScreenStreamService.listener = { s, active -> render(s, active) }
+        UsbBridgeService.listener = { s, active -> renderUsb(s, active) }
         render(ScreenStreamService.lastStatus, ScreenStreamService.running)
+        renderUsb(UsbBridgeService.lastStatus, UsbBridgeService.running)
     }
 
     override fun onStop() {
         ScreenStreamService.listener = null
+        UsbBridgeService.listener = null
         super.onStop()
     }
 
@@ -78,6 +89,29 @@ class MainActivity : Activity() {
         statusView.text = msg
         button.text = if (active) "Stop streaming" else "Start streaming (entire screen)"
     }
+
+    private fun renderUsb(msg: String, active: Boolean) {
+        usbStatus.text = msg
+        usbButton.text = if (active) "Disconnect goggles" else "Connect goggles (USB)"
+    }
+
+    // ---------------------------------------------------------------- USB link
+
+    private fun onUsbButton() {
+        if (UsbBridgeService.running) {
+            startService(Intent(this, UsbBridgeService::class.java).setAction(UsbBridgeService.ACTION_STOP))
+            return
+        }
+        // The USB bridge is a VPN-service (it routes only 192.168.60.0/24 into the goggles).
+        val consent = VpnService.prepare(this)
+        if (consent != null) startActivityForResult(consent, 200) else startUsbBridge()
+    }
+
+    private fun startUsbBridge() {
+        startService(Intent(this, UsbBridgeService::class.java).setAction(UsbBridgeService.ACTION_START))
+    }
+
+    // ---------------------------------------------------------------- Streaming
 
     private fun onButton() {
         if (ScreenStreamService.running) {
@@ -105,6 +139,11 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 200) {
+            if (resultCode == RESULT_OK) startUsbBridge()
+            else Toast.makeText(this, "VPN permission is needed to reach the goggles", Toast.LENGTH_LONG).show()
+            return
+        }
         if (requestCode != 100) return
         if (resultCode != RESULT_OK || data == null) {
             Toast.makeText(this, "Screen capture was not allowed", Toast.LENGTH_SHORT).show()

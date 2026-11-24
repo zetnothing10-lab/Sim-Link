@@ -19,10 +19,18 @@ sends it over TCP using the same wire protocol VisorSim uses toward DJI Goggles 
 `python3 tools/test_receiver.py --port 9000` on a PC on the same Wi-Fi, set the app's address to the PC's IP and port 9000,
 then `ffplay -f h264 dump.h264`.
 
-## Not done yet
-* **Reaching the goggles from a phone.** Android cannot act as an RNDIS host, so 192.168.60.2 is not reachable from a
-  stock phone. Needs a userspace RNDIS-over-UsbManager transport (next stage).
-* **Goggles plugin control** (JSON over the USB bulk interface, e.g. `{"v":1,"id":1,"method":"desktop.plugins"}` and
-  `desktop.control.apply` `sim-display...`) that VisorSim uses to enable "PC Sim". Select PC Sim on the goggles yourself.
-* **TCP port**: not recovered from the exe; read it from VisorSim.log or the goggles side and enter it in the app.
-* Hello fps field / variant byte are inferred from disassembly; untested against real goggles. Never compiled here.
+## USB link to the goggles (new)
+Android has no RNDIS host driver, so the app implements one in userspace:
+app socket -> TUN (VpnService, only 192.168.60.0/24 is routed) -> Ethernet/ARP -> RNDIS -> USB bulk (UsbManager).
+Goggles = USB 2ca3:0020. It also opens the goggles' DUML control interface (#4, bulk 0x04/0x85) and queries
+`desktop.plugins` so the status line shows what the goggles report.
+
+Usage: plug goggles into the phone, select PC Sim on the goggles, tap "Connect goggles (USB)", allow VPN + USB,
+wait for "Goggles reachable at 192.168.60.2", then "Start streaming" (192.168.60.2, port 9153).
+
+## Caveats
+* Never compiled or run against real goggles; if USB setup fails the status line prints the interface list
+  the goggles exposed - send that back for a fix.
+* Plugin *enable* commands (desktop.control.apply) are not sent; select PC Sim on the goggles yourself.
+* Only one VPN can be active on Android at a time.
+* Hello fps field is inferred from disassembly.
