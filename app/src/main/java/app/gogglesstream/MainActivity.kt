@@ -45,7 +45,7 @@ class MainActivity : Activity() {
         root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 96, 48, 48) }
         setContentView(android.widget.ScrollView(this).apply { addView(root) })
 
-        root.addView(label("Goggles Screen Stream", 24f))
+        root.addView(label("Sim-Link", 24f))
         root.addView(label("Streams your entire Android screen as 1920x1080 H.264 to DJI Goggles 3 (PC Sim)."))
 
         root.addView(label("Step 1 – USB link to the goggles", 16f))

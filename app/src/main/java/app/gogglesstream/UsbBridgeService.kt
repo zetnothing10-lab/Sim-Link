@@ -46,6 +46,7 @@ class UsbBridgeService : Service() {
         private val main = Handler(Looper.getMainLooper())
         fun publish(msg: String, active: Boolean) {
             lastStatus = msg
+            LogApp.event("USB: $msg")
             main.post { listener?.invoke(msg, active) }
         }
     }

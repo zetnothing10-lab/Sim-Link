@@ -35,6 +35,7 @@ class ScreenStreamService : Service() {
 
         fun publish(msg: String, active: Boolean) {
             lastStatus = msg
+            LogApp.event("STREAM: $msg")
             main.post { listener?.invoke(msg, active) }
         }
     }
