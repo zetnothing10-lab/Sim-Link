@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.text.InputType
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -21,6 +22,7 @@ class MainActivity : Activity() {
     private lateinit var port: EditText
     private lateinit var fps: EditText
     private lateinit var mbps: EditText
+    private lateinit var lowImpact: CheckBox
     private lateinit var usbButton: Button
     private lateinit var usbStatus: TextView
     private lateinit var button: Button
@@ -60,6 +62,11 @@ class MainActivity : Activity() {
         port = field("TCP port", prefs.getString("port", "9153")!!, true)
         fps = field("FPS (30–120)", prefs.getString("fps", "60")!!, true)
         mbps = field("Bitrate (Mb/s)", prefs.getString("mbps", "20")!!, true)
+        lowImpact = CheckBox(this).apply {
+            text = "Low-impact mode (gentler on DJI Fly)"
+            isChecked = prefs.getBoolean("low", true)
+        }
+        root.addView(lowImpact)
         button = Button(this).apply { setOnClickListener { onButton() } }
         root.addView(button)
         statusView = label("", 14f)
@@ -120,7 +127,8 @@ class MainActivity : Activity() {
             return
         }
         prefs.edit().putString("host", host.text.toString().trim()).putString("port", "$p")
-            .putString("fps", "$f").putString("mbps", "$m").apply()
+            .putString("fps", "$f").putString("mbps", "$m")
+            .putBoolean("low", lowImpact.isChecked).apply()
 
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         // Android 14+: restrict the picker to the entire default display (no single-app option).
@@ -146,6 +154,7 @@ class MainActivity : Activity() {
             .putExtra(ScreenStreamService.EXTRA_PORT, port.text.toString().toInt())
             .putExtra(ScreenStreamService.EXTRA_FPS, fps.text.toString().toInt().coerceIn(30, 120))
             .putExtra(ScreenStreamService.EXTRA_MBPS, mbps.text.toString().toInt().coerceIn(1, 100))
+            .putExtra(ScreenStreamService.EXTRA_LOW, lowImpact.isChecked)
         startForegroundService(i)
     }
 }

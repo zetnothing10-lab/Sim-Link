@@ -121,6 +121,7 @@ class UsbBridgeService : Service() {
             val info = l.init()
 
             stack = UserTcpStack(hostIp, gogglesIp) { ip -> sendIpPacket(ip) }
+                .also { it.onEvent = { m -> LogApp.event("TCP: $m") } }
             alive = true
 
             watchDetach(dev)

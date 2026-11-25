@@ -18,6 +18,10 @@ import java.nio.ByteOrder
  */
 class GogglesLink(private val cfg: StreamConfig) {
     private var closer: (() -> Unit)? = null
+    private var diagFn: (() -> String)? = null
+
+    /** TCP state of the USB path, for the session log (empty for a normal Wi-Fi socket). */
+    fun diag(): String = try { diagFn?.invoke() ?: "" } catch (_: Exception) { "" }
     private var out: OutputStream? = null
     private var inp: InputStream? = null
 
@@ -29,6 +33,7 @@ class GogglesLink(private val cfg: StreamConfig) {
             val s = usb.connect(cfg.port, 5_000)
             s.soTimeout = 15_000
             closer = { s.close() }
+            diagFn = { s.diag() }
             out = s.output
             inp = s.input
             setTimeout = { s.soTimeout = it }

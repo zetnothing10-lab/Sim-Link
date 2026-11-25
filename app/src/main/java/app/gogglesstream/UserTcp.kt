@@ -73,6 +73,11 @@ class UserTcpStack(
     private val rnd = Random()
     private val ipId = AtomicInteger(rnd.nextInt(0xffff))
     @Volatile private var stopped = false
+
+    /** Optional diagnostic sink (the Android service points this at the session log). */
+    @Volatile var onEvent: ((String) -> Unit)? = null
+    internal fun note(s: String) { try { onEvent?.invoke(s) } catch (_: Exception) {} }
+
     private val timer = Thread({ timerLoop() }, "usb-tcp-timer").apply { isDaemon = true; start() }
 
     /** Opens a TCP connection to [port] on the goggles. Blocks until established or [timeoutMs] elapsed. */
@@ -229,6 +234,8 @@ class UserTcpSocket internal constructor(
     private var retries = 0
     private var lastProbe = 0L
     private var closedAt = 0L
+    private var retxTotal = 0
+    private var zeroWndNoted = false
 
     @Volatile var soTimeout = 0
 
@@ -279,6 +286,7 @@ class UserTcpSocket internal constructor(
                 return
             }
             if (flags and UserTcpStack.RST != 0) {
+                stack.note("RST from goggles: state=$state inflight=${sndNxt - sndUna} peerWnd=$peerWnd retx=$retxTotal rto=$rto")
                 if (state == 1 || (flags and UserTcpStack.ACK != 0 && ack == iss + 1)) fail("connection reset by goggles")
                 return
             }
@@ -312,6 +320,8 @@ class UserTcpSocket internal constructor(
                     sndUna = ack
                     retries = 0
                 }
+                if (wnd == 0 && !zeroWndNoted) { zeroWndNoted = true; stack.note("goggles advertised a zero window (inflight=${sndNxt - sndUna})") }
+                if (wnd != 0) zeroWndNoted = false
                 peerWnd = wnd
                 cond.signalAll()
             }
@@ -364,6 +374,10 @@ class UserTcpSocket internal constructor(
                 if (n - head.sentAt >= rto) {
                     if (retries >= 12) { fail("TCP timeout (goggles stopped answering)"); return }
                     retries++
+                    retxTotal++
+                    if (retxTotal <= 20 || retxTotal % 50 == 0) {
+                        stack.note("retransmit #$retxTotal inflight=${sndNxt - sndUna} rto=$rto peerWnd=$peerWnd")
+                    }
                     for (s in unacked) { sendData(s); s.sentAt = n } // go-back-N
                     rto = (rto * 2).coerceAtMost(2000)
                 }
@@ -445,7 +459,13 @@ class UserTcpSocket internal constructor(
         }
     }
 
+    /** One-line TCP state for the session log. */
+    fun diag(): String = lock.withLock {
+        "tcp[inflight=${sndNxt - sndUna} wnd=$peerWnd mss=$mss rto=$rto retx=$retxTotal]"
+    }
+
     private fun fail(reason: String) {
+        stack.note("connection failed: $reason")
         error = reason
         state = 2
         closedAt = now()

@@ -25,6 +25,7 @@ class ScreenStreamService : Service() {
         const val EXTRA_PORT = "port"
         const val EXTRA_FPS = "fps"
         const val EXTRA_MBPS = "mbps"
+        const val EXTRA_LOW = "low"
         private const val CHANNEL = "stream"
         private const val NOTIF_ID = 1
 
@@ -69,6 +70,7 @@ class ScreenStreamService : Service() {
             port = i.getIntExtra(EXTRA_PORT, 0),
             fps = i.getIntExtra(EXTRA_FPS, 60),
             bitrateMbps = i.getIntExtra(EXTRA_MBPS, 20),
+            lowImpact = i.getBooleanExtra(EXTRA_LOW, true),
         )
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = mpm.getMediaProjection(code, data)

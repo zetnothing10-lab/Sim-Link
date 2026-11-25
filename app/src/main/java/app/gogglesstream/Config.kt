@@ -6,6 +6,8 @@ data class StreamConfig(
     val port: Int,
     val fps: Int,
     val bitrateMbps: Int,
+    /** Gentler on other apps (DJI Fly): normal-priority encoder. Frame rate is capped to [fps] either way. */
+    val lowImpact: Boolean = true,
 ) {
     val width = 1920
     val height = 1080

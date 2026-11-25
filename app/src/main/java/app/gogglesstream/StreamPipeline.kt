@@ -140,7 +140,19 @@ class StreamPipeline(
         }
     }
 
+    private fun memLine(): String {
+        return try {
+            val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val mi = android.app.ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mi)
+            "MEM avail=${mi.availMem shr 20}MB total=${mi.totalMem shr 20}MB threshold=${mi.threshold shr 20}MB " +
+                "low=${mi.lowMemory} appPss=${android.os.Debug.getPss() / 1024}MB queue=${queue.size} dropped=${dropped.get()} " +
+                (link?.diag() ?: "")
+        } catch (e: Exception) { "MEM unavailable: ${e.message}" }
+    }
+
     private fun statsLoop() {
+        var tick = 0
         var lastBytes = 0L
         var lastFrames = 0L
         try {
@@ -152,6 +164,7 @@ class StreamPipeline(
                 status("Streaming ${cfg.width}x${cfg.height} · ${fr - lastFrames} fps · " +
                     "%.1f Mb/s · dropped ${dropped.get()}".format(mbps))
                 lastBytes = b; lastFrames = fr
+                if (++tick % 2 == 0) LogApp.event(memLine())
             }
         } catch (_: InterruptedException) {}
     }
@@ -168,7 +181,8 @@ class StreamPipeline(
         fmt.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
         fmt.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         fmt.setInteger(MediaFormat.KEY_LATENCY, 1)
-        fmt.setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
+        // 0 = realtime, 1 = best effort. Best effort lets other apps' video (DJI Fly) win when the chip is busy.
+        fmt.setInteger(MediaFormat.KEY_PRIORITY, if (cfg.lowImpact) 1 else 0)
         fmt.setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
         // Repeat the last frame when the screen is static so the decoder keeps getting data.
         fmt.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / cfg.fps)
@@ -358,11 +372,18 @@ class StreamPipeline(
         ))
     }
 
+    private var lastTs = 0L
+    private val minIntervalNs: Long get() = (1_000_000_000L / cfg.fps.coerceAtLeast(1)) * 9 / 10
+
     private fun drawFrame() {
         if (!running.get()) return
         val st = surfaceTexture ?: return
         try {
             st.updateTexImage()
+            // Cap to the chosen FPS (the screen delivers up to 60+): fewer frames = less GPU/encoder/RAM pressure.
+            val ts = st.timestamp
+            if (lastTs != 0L && ts - lastTs < minIntervalNs) return
+            lastTs = ts
             st.getTransformMatrix(texMatrix)
 
             GLES20.glViewport(0, 0, cfg.width, cfg.height)
