@@ -43,8 +43,27 @@ class StreamPipeline(
     private class Frame(val data: ByteArray, val key: Boolean)
 
     private companion object {
-        /** Largest delta frame we send. The goggles reset the connection at ~1,000,000 bytes; 944,128 was still accepted. */
-        const val MAX_FRAME_BYTES = 800_000
+        /** Largest frame we send. The goggles reset the connection at ~1,000,000 bytes; 944,128 was still accepted. */
+        const val MAX_FRAME_BYTES = 900_000
+    }
+
+    private var oversizeStreak = 0
+    private var bitrateLevel = 0
+    private var lastOversizeAt = 0L
+
+    private fun requestKeyFrame(c: MediaCodec) {
+        val p = android.os.Bundle()
+        p.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+        try { c.setParameters(p) } catch (_: Exception) {}
+    }
+
+    /** Level 0 = the chosen bitrate, 1 = half, 2 = quarter, 3 = eighth. */
+    private fun applyBitrate(c: MediaCodec) {
+        val bps = (cfg.bitrateMbps * 1_000_000) shr bitrateLevel
+        LogApp.event("Encoder bitrate set to ${bps / 1000} kb/s (level $bitrateLevel)")
+        val p = android.os.Bundle()
+        p.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps)
+        try { c.setParameters(p) } catch (_: Exception) {}
     }
 
     private val running = AtomicBoolean(false)
@@ -261,18 +280,26 @@ class StreamPipeline(
             if (!f.key) { dropped.incrementAndGet(); return }
             waitingForKey = false
         }
-        // The goggles' receiver closes the connection on any frame of about 1 MB or more (seen: 944 KB ok, 984 KB+ reset).
-        // The encoder spends its saved-up bitrate on one huge frame when the screen changes a lot (e.g. a new DJI Fly page).
-        // Drop such a frame instead of sending it, and ask for a fresh key frame (normally 100-300 KB) to resync.
-        if (!f.key && f.data.size > MAX_FRAME_BYTES) {
-            LogApp.event("Oversized frame (${f.data.size / 1024} KB) dropped - receiver limit is ~1 MB; requesting a key frame")
+        // The goggles' receiver closes the connection on any frame of about 1 MB or more (seen: 944 KB ok, 984 KB+ reset),
+        // key frames included. After a big screen change (e.g. switching DJI Simulator -> Fly) the encoder spends its saved-up
+        // bitrate on one huge frame. Never send such a frame: drop it and ask for a fresh key frame instead. If that keeps
+        // happening, temporarily lower the encoder bitrate so the frames get smaller, and restore it after a quiet period.
+        val now = System.nanoTime() / 1_000_000
+        if (f.data.size > MAX_FRAME_BYTES) {
+            oversizeStreak++
+            lastOversizeAt = now
+            LogApp.event(
+                "Oversized ${if (f.key) "key" else "delta"} frame (${f.data.size / 1024} KB) dropped - receiver limit is ~1 MB; " +
+                    "requesting a key frame (streak $oversizeStreak, bitrate level $bitrateLevel)",
+            )
             waitingForKey = true
-            val p = android.os.Bundle()
-            p.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
-            try { c.setParameters(p) } catch (_: Exception) {}
+            if (oversizeStreak >= 2 && bitrateLevel < 3) { bitrateLevel++; applyBitrate(c) }
+            requestKeyFrame(c)
             dropped.incrementAndGet()
             return
         }
+        oversizeStreak = 0
+        if (bitrateLevel > 0 && now - lastOversizeAt > 10_000) { bitrateLevel = 0; applyBitrate(c) }
         if (queue.size >= 4) {
             queue.clear()
             dropped.addAndGet(4)
