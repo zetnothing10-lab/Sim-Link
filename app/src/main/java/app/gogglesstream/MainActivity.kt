@@ -61,7 +61,7 @@ class MainActivity : Activity() {
         host = field("Receiver address", prefs.getString("host", "192.168.60.2")!!, false)
         port = field("TCP port", prefs.getString("port", "9153")!!, true)
         fps = field("FPS (30–120)", prefs.getString("fps", "60")!!, true)
-        mbps = field("Bitrate (Mb/s)", prefs.getString("mbps", "20")!!, true)
+        mbps = field("Bitrate (Mb/s)", prefs.getString("mbps", "8")!!, true)
         lowImpact = CheckBox(this).apply {
             text = "Low-impact mode (gentler on DJI Fly)"
             isChecked = prefs.getBoolean("low", true)

@@ -69,7 +69,7 @@ class ScreenStreamService : Service() {
             host = i.getStringExtra(EXTRA_HOST) ?: "192.168.60.2",
             port = i.getIntExtra(EXTRA_PORT, 0),
             fps = i.getIntExtra(EXTRA_FPS, 60),
-            bitrateMbps = i.getIntExtra(EXTRA_MBPS, 20),
+            bitrateMbps = i.getIntExtra(EXTRA_MBPS, 8),
             lowImpact = i.getBooleanExtra(EXTRA_LOW, true),
         )
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
