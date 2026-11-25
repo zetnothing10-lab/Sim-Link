@@ -1,4 +1,4 @@
-# Goggles Screen Stream (Android)
+# Sim-Link (Android)
 
 Android take on VisorSim.exe: captures the **entire screen** (MediaProjection; on Android 14+ the picker is
 restricted to the whole display), letterboxes it into 1920x1080, encodes H.264 with the hardware encoder and
