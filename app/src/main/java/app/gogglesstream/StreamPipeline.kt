@@ -129,16 +129,30 @@ class StreamPipeline(
                 if (f == null) {
                     l.sendKeepalive()
                 } else {
+                    val n = f.data.size
+                    curFrame = n; curKey = f.key
+                    if (n > maxFrame) maxFrame = n
+                    if (f.key) lastKeySize = n
+                    if (n > 100_000) LogApp.event("BIG FRAME ${if (f.key) "key" else "delta"} ${n / 1024} KB")
                     l.sendFrame(f.data)
-                    sentBytes.addAndGet(f.data.size.toLong() + 4)
+                    curFrame = 0
+                    sentBytes.addAndGet(n.toLong() + 4)
                     sentFrames.incrementAndGet()
                 }
             }
         } catch (e: InterruptedException) {
         } catch (e: Exception) {
-            if (running.get()) stop("Goggles connection lost: ${e.message}")
+            if (running.get()) {
+                LogApp.event("SEND FAILED while sending a ${curFrame / 1024} KB ${if (curKey) "key" else "delta"} frame (last key frame ${lastKeySize / 1024} KB, largest since last log ${maxFrame / 1024} KB)")
+                stop("Goggles connection lost: ${e.message}")
+            }
         }
     }
+
+    @Volatile private var maxFrame = 0
+    @Volatile private var lastKeySize = 0
+    @Volatile private var curFrame = 0
+    @Volatile private var curKey = false
 
     private fun memLine(): String {
         return try {
@@ -147,6 +161,7 @@ class StreamPipeline(
             am.getMemoryInfo(mi)
             "MEM avail=${mi.availMem shr 20}MB total=${mi.totalMem shr 20}MB threshold=${mi.threshold shr 20}MB " +
                 "low=${mi.lowMemory} appPss=${android.os.Debug.getPss() / 1024}MB queue=${queue.size} dropped=${dropped.get()} " +
+                "maxFrame=${maxFrame / 1024}KB lastKey=${lastKeySize / 1024}KB " +
                 (link?.diag() ?: "")
         } catch (e: Exception) { "MEM unavailable: ${e.message}" }
     }
@@ -164,7 +179,7 @@ class StreamPipeline(
                 status("Streaming ${cfg.width}x${cfg.height} · ${fr - lastFrames} fps · " +
                     "%.1f Mb/s · dropped ${dropped.get()}".format(mbps))
                 lastBytes = b; lastFrames = fr
-                if (++tick % 2 == 0) LogApp.event(memLine())
+                if (++tick % 2 == 0) { LogApp.event(memLine()); maxFrame = 0 }
             }
         } catch (_: InterruptedException) {}
     }
