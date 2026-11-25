@@ -42,6 +42,11 @@ class StreamPipeline(
 ) {
     private class Frame(val data: ByteArray, val key: Boolean)
 
+    private companion object {
+        /** Largest delta frame we send. The goggles reset the connection at ~1,000,000 bytes; 944,128 was still accepted. */
+        const val MAX_FRAME_BYTES = 800_000
+    }
+
     private val running = AtomicBoolean(false)
     private val queue = LinkedBlockingQueue<Frame>()
     private val sentBytes = AtomicLong()
@@ -255,6 +260,18 @@ class StreamPipeline(
         if (waitingForKey) {
             if (!f.key) { dropped.incrementAndGet(); return }
             waitingForKey = false
+        }
+        // The goggles' receiver closes the connection on any frame of about 1 MB or more (seen: 944 KB ok, 984 KB+ reset).
+        // The encoder spends its saved-up bitrate on one huge frame when the screen changes a lot (e.g. a new DJI Fly page).
+        // Drop such a frame instead of sending it, and ask for a fresh key frame (normally 100-300 KB) to resync.
+        if (!f.key && f.data.size > MAX_FRAME_BYTES) {
+            LogApp.event("Oversized frame (${f.data.size / 1024} KB) dropped - receiver limit is ~1 MB; requesting a key frame")
+            waitingForKey = true
+            val p = android.os.Bundle()
+            p.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            try { c.setParameters(p) } catch (_: Exception) {}
+            dropped.incrementAndGet()
+            return
         }
         if (queue.size >= 4) {
             queue.clear()
