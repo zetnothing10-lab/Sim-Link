@@ -30,8 +30,7 @@ Usage: plug goggles into the phone, select PC Sim on the goggles, tap "Connect g
 wait for "Goggles reachable at 192.168.60.2", then "Start streaming" (192.168.60.2, port 9153).
 
 ## Caveats
-* Never compiled or run against real goggles; if USB setup fails the status line prints the interface list
-  the goggles exposed - send that back for a fix.
+* It must use the Visor technology plugin PC Sim.
 * Plugin *enable* commands (desktop.control.apply) are not sent; select PC Sim on the goggles yourself.
 * The userspace TCP stack is a minimal client (one peer, in-order receive, go-back-N retransmit). Other apps cannot reach the goggles through it; only this app's own stream can.
-* Hello fps field is inferred from disassembly.
+
