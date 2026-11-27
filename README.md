@@ -11,14 +11,6 @@ sends it over TCP using the same wire protocol VisorSim uses toward DJI Goggles 
 4. Frames: `u32 LE length` + H.264 Annex-B access unit (SPS/PPS prepended to every IDR).
    Idle for >= 1 s -> send `00 00 00 00` keepalive.
 
-## Build
-* Android Studio: open this folder, Run. (minSdk 29, no third-party dependencies.)
-* Or push to GitHub: `.github/workflows/build.yml` builds the debug APK as a downloadable artifact.
-
-## Test without goggles
-`python3 tools/test_receiver.py --port 9000` on a PC on the same Wi-Fi, set the app's address to the PC's IP and port 9000,
-then `ffplay -f h264 dump.h264`.
-
 ## USB link to the goggles (new)
 Android has no RNDIS host driver, so the app implements one in userspace:
 GogglesLink -> UserTcpStack (userspace TCP, `UserTcp.kt`) -> IPv4/Ethernet/ARP -> RNDIS -> USB bulk (UsbManager).
